@@ -1,0 +1,50 @@
+# Install another release of the agent (Roshemet): "Run workflow", then type its version (the release notes are at
+# github.com/roshemet/agent/releases). It checks GitHub's attestation that roshemet/agent's own release workflow
+# built that release, and only then writes the version into roshemet.json; the next Bank run uses it. Going back to
+# the version before is the same: type that one.
+name: Update the agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The agent version to install (like 1.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: That release, its provenance checked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "That is not a version: type it like 1.1.0."; exit 1; }
+          cd "$RUNNER_TEMP"
+          gh release download "v$VERSION" --repo roshemet/agent --pattern "roshemet-agent-$VERSION.tgz" --pattern "roshemet-agent-$VERSION.tgz.sigstore.json"
+          gh attestation verify "roshemet-agent-$VERSION.tgz" --bundle "roshemet-agent-$VERSION.tgz.sigstore.json" --repo roshemet/agent \
+            --signer-workflow roshemet/agent/.github/workflows/release.yml --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners
+
+      - name: roshemet.json
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          node -e "const fs = require('fs'); const j = JSON.parse(fs.readFileSync('roshemet.json', 'utf8')); j.agent = process.env.VERSION; fs.writeFileSync('roshemet.json', JSON.stringify(j, null, 2) + '\n')"
+          if git diff --quiet; then echo "The agent is already $VERSION."; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qam "The agent: $VERSION"
+          git push -q
+          echo "Installed: the next Bank run uses the agent $VERSION."
